@@ -6,6 +6,8 @@
 import re
 import json
 import os
+import sqlite3
+from datetime import datetime
 from typing import TypedDict, Annotated, Sequence, Optional, Dict, Any
 import operator
 
@@ -367,7 +369,7 @@ def call_model(state: AgentState, openai_client: OpenAI):
                 AIMessage(
                     content="Lo siento, ha ocurrido un error inesperado. Por favor, inténtalo de nuevo más tarde."
                 )
-            ]
+            ],
         }
 
 
@@ -519,6 +521,7 @@ class CustomerServiceAgent:
         - 初始化 OpenAI 客户端连接 DeepSeek API
         - 构建知识库索引
         - 编译 LangGraph 图
+        - 初始化 SQLite 数据库
         """
         # 从环境变量读取 API Key
         api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -575,17 +578,91 @@ class CustomerServiceAgent:
         # 线程 ID，用于区分不同的对话
         self.thread_id = "thread-0"
 
-    def chat(self, user_message: str) -> str:
+        # SQLite 数据库配置
+        self.db_path = "conversations.db"
+        self.init_db()
+
+    def init_db(self):
+        """
+        初始化 SQLite 数据库，创建对话记录表
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.commit()
+        conn.close()
+        print("Database initialized successfully.")
+
+    def save_message(self, session_id, role, content):
+        """
+        保存单条消息到数据库
+
+        Args:
+            session_id: 会话 ID
+            role: 角色（user 或 assistant）
+            content: 消息内容
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO conversations (session_id, role, content) VALUES (?, ?, ?)",
+                (session_id, role, content),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Error saving message to database: {e}")
+
+    def load_history(self, session_id) -> list[dict]:
+        """
+        从数据库加载会话历史
+
+        Args:
+            session_id: 会话 ID
+
+        Returns:
+            消息列表，格式为 [{"role": role, "content": content}, ...]
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT role, content FROM conversations WHERE session_id = ? ORDER BY timestamp ASC",
+                (session_id,),
+            )
+            rows = cursor.fetchall()
+            conn.close()
+            return [{"role": role, "content": content} for (role, content) in rows]
+        except Exception as e:
+            print(f"Error loading conversation history: {e}")
+            return []
+
+    def chat(self, user_message: str, session_id="default_user") -> str:
         """
         处理用户消息并生成回复
 
         Args:
             user_message: 用户输入的西班牙语消息
+            session_id: 会话 ID（用于持久化）
 
         Returns:
             str: Agent 生成的西班牙语回复
         """
         try:
+            # 保存用户消息到数据库
+            self.save_message(session_id, "user", user_message)
+
             # 配置对话线程
             config = {"configurable": {"thread_id": self.thread_id}}
 
@@ -597,11 +674,16 @@ class CustomerServiceAgent:
 
             # 提取最后一条助理消息
             messages = output["messages"]
+            reply = "Lo siento, no puedo responder en este momento."
             for msg in reversed(messages):
                 if isinstance(msg, AIMessage):
-                    return msg.content
+                    reply = msg.content
+                    break
 
-            return "Lo siento, no puedo responder en este momento."
+            # 保存助理回复到数据库
+            self.save_message(session_id, "assistant", reply)
+
+            return reply
 
         except Exception as e:
             print(f"Error en el chat: {e}")
@@ -678,3 +760,4 @@ if __name__ == "__main__":
         import traceback
 
         traceback.print_exc()
+
