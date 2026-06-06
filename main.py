@@ -120,23 +120,43 @@ if not agent:
     st.stop()
 
 
+# 获取 session_id
+# 默认使用 "default_user"，也可以从 st.query_params 获取（未来扩展）
+session_id = "default_user"
+try:
+    if "session_id" in st.query_params:
+        session_id = st.query_params["session_id"]
+except:
+    pass
+
+
 # 初始化会话状态
 if "messages" not in st.session_state:
-    st.session_state.messages = []
+    # 首先尝试从数据库加载历史
+    try:
+        history = agent.load_history(session_id)
+        if history:
+            st.session_state.messages = history
+        else:
+            # 没有历史，添加默认欢迎消息
+            st.session_state.messages = [
+                {
+                    "role": "assistant",
+                    "content": "¡Hola! Soy tu asistente de AutoService. Puedo ayudarte con tu pedido, modificar direcciones y responder tus dudas sobre nuestras políticas. ¿En qué puedo ayudarte hoy? 😊"
+                }
+            ]
+    except Exception as e:
+        # 加载失败时使用默认欢迎消息
+        st.session_state.messages = [
+            {
+                "role": "assistant",
+                "content": "¡Hola! Soy tu asistente de AutoService. Puedo ayudarte con tu pedido, modificar direcciones y responder tus dudas sobre nuestras políticas. ¿En qué puedo ayudarte hoy? 😊"
+            }
+        ]
 
 # 快捷问题按钮点击状态
 if "quick_question" not in st.session_state:
     st.session_state.quick_question = None
-
-
-# 欢迎消息（如果历史为空）
-if not st.session_state.messages:
-    st.session_state.messages = [
-        {
-            "role": "assistant",
-            "content": "¡Hola! Soy tu asistente de AutoService. Puedo ayudarte con tu pedido, modificar direcciones y responder tus dudas sobre nuestras políticas. ¿En qué puedo ayudarte hoy? 😊"
-        }
-    ]
 
 
 # 快捷问题按钮
@@ -187,10 +207,10 @@ if st.session_state.quick_question:
     with st.chat_message("assistant"):
         with st.spinner("Pensando..."):
             try:
-                reply = agent.chat(user_input)
+                reply = agent.chat(user_input, session_id)
                 st.markdown(reply)
                 
-                # 添加回复到历史
+                # 添加回复到历史（Agent 已经保存到数据库，但这里也要更新 session_state）
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": reply
@@ -224,10 +244,10 @@ if user_input := st.chat_input("Escribe tu pregunta en español..."):
     with st.chat_message("assistant"):
         with st.spinner("Pensando..."):
             try:
-                reply = agent.chat(user_input)
+                reply = agent.chat(user_input, session_id)
                 st.markdown(reply)
                 
-                # 添加回复到历史
+                # 添加回复到历史（Agent 已经保存到数据库，但这里也要更新 session_state）
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": reply
