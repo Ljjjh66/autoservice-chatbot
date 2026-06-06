@@ -1,19 +1,35 @@
 """
-西班牙语跨境电商客服 Agent
-使用 DeepSeek-V3 模型，结合 RAG 检索和业务工具
+西班牙语跨境电商智能客服 Agent（LangGraph 版本）
+使用 DeepSeek-V3 + RAG + 工具调用
 """
 
 import re
-import time
-from types import SimpleNamespace
-
-import os
 import json
+import os
+from typing import TypedDict, Annotated, Sequence, Optional, Dict, Any
+import operator
+
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.messages import (
+    BaseMessage,
+    HumanMessage,
+    AIMessage,
+    ToolMessage,
+    SystemMessage,
+)
+
 from openai import OpenAI
 from openai import APIError, APIConnectionError, RateLimitError
 
 # 从同项目导入模块
-from tools import query_order_logistics, update_order_address, cancel_order, request_refund, estimate_shipping
+from tools import (
+    query_order_logistics,
+    update_order_address,
+    cancel_order,
+    request_refund,
+    estimate_shipping,
+)
 from rag import search, build_knowledge_base
 
 
@@ -24,26 +40,146 @@ from rag import search, build_knowledge_base
 # DeepSeek API 配置
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-chat"
-API_TIMEOUT = 30  # 超时时间（秒）
+API_TIMEOUT = 30
 
 # 敏感操作列表
 SENSITIVE_ACTIONS = ["update_order_address", "cancel_order", "request_refund"]
 
+# 工具定义（OpenAI 格式）
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "query_order_logistics",
+            "description": "Consulta el estado de logística de un pedido. Necesita el número de pedido (formato: ESPxxxxx). Retorna información sobre el estado actual, transportista y fecha estimada de entrega.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "Número de pedido, formato: ESPxxxxx",
+                    }
+                },
+                "required": ["order_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_order_address",
+            "description": "Modifica la dirección de entrega de un pedido. Solo funciona para pedidos con estado 'No enviado'. Necesita el número de pedido y la nueva dirección.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "Número de pedido, formato: ESPxxxxx",
+                    },
+                    "new_address": {
+                        "type": "string",
+                        "description": "Nueva dirección de entrega",
+                    },
+                },
+                "required": ["order_id", "new_address"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search",
+            "description": "Busca información en la base de conocimiento sobre políticas de la tienda, preguntas frecuentes, devoluciones, envíos, cambios, etc. Úsalo siempre que el usuario pregunte sobre políticas o reglas.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Consulta del usuario en español",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "Número de resultados a recuperar (por defecto 2)",
+                        "default": 2,
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_order",
+            "description": "Cancelar un pedido que aún no ha sido enviado. Necesita el número de pedido.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "Número de pedido, formato: ESPxxxxx",
+                    }
+                },
+                "required": ["order_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "request_refund",
+            "description": "Solicitar un reembolso para un pedido entregado. Necesita el número de pedido y la razón (opcional).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "Número de pedido, formato: ESPxxxxx",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Razón del reembolso (opcional)",
+                        "default": "",
+                    },
+                },
+                "required": ["order_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "estimate_shipping",
+            "description": "Estimar el costo de envío internacional. Necesita el país de destino y el peso en kg.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "country": {
+                        "type": "string",
+                        "description": "País de destino (en español o inglés)",
+                    },
+                    "weight": {
+                        "type": "number",
+                        "description": "Peso del paquete en kilogramos",
+                    },
+                },
+                "required": ["country", "weight"],
+            },
+        },
+    },
+]
 
-# ============================================================
 # 西班牙语系统提示词
-# ============================================================
-
 SYSTEM_PROMPT = """Eres un agente de servicio al cliente profesional para una tienda de comercio electrónico internacional que opera en España.
 
 ## Tu rol y responsabilidades:
-- Proporcionar atención al cliente en español de manera amable y profesional
+- Proporcionar atención al cliente en español de manera amigable y profesional
 - Ayudar a los usuarios con consultas sobre el estado de sus pedidos
 - Asistir en la modificación de direcciones de entrega
 - Responder preguntas sobre políticas de la tienda
 
 ## Reglas importantes:
-- Cuando el usuario pregunte sobre POLÍTICAS, REGLAS, PREGUNTAS FRECUENTES (devoluciones, envío, cambios, etc.), **SIEMPRE** llama primero a la función 'search' para buscar en la base de conocimiento, luego responde basándote en los resultados encontrados.
+- Cuando el usuario pregunte sobre POLÍTICAS, REGLAS, PREGUNTAS FRECUENTES (devoluciones, envíos, cambios, etc.), **SIEMPRE** llama primero a la función 'search' para buscar en la base de conocimiento, luego responde basándote en los resultados encontrados.
 
 - Cuando el usuario necesite CONSULTAR EL ESTADO DE UN PEDIDO o la LOGÍSTICA, llama a la función 'query_order_logistics' con el número de pedido.
 
@@ -64,12 +200,314 @@ SYSTEM_PROMPT = """Eres un agente de servicio al cliente profesional para una ti
 
 
 # ============================================================
-# Agent 类定义
+# Agent 状态定义
 # ============================================================
+
+
+class AgentState(TypedDict):
+    messages: Annotated[list[BaseMessage], operator.add]
+    pending_action: Optional[Dict[str, Any]]
+
+
+# ============================================================
+# 工具函数：生成确认消息
+# ============================================================
+
+
+def _generate_confirmation_message(tool_call) -> str:
+    """
+    生成操作确认消息（西班牙语）
+
+    Args:
+        tool_call: 工具调用对象
+
+    Returns:
+        str: 西班牙语确认消息
+    """
+    function_name = tool_call["name"]
+    function_args = tool_call.get("args", {})
+
+    if function_name == "cancel_order":
+        order_id = function_args.get("order_id", "desconocido")
+        return f"¿Confirmas que deseas cancelar el pedido {order_id}? Responde 'sí' para confirmar o 'no' para cancelar."
+
+    elif function_name == "update_order_address":
+        order_id = function_args.get("order_id", "desconocido")
+        new_address = function_args.get("new_address", "desconocida")
+        return f"¿Confirmas que deseas cambiar la dirección del pedido {order_id} a: '{new_address}'? Responde 'sí' para confirmar o 'no' para cancelar."
+
+    elif function_name == "request_refund":
+        order_id = function_args.get("order_id", "desconocido")
+        reason = function_args.get("reason", "no especificada")
+        return f"¿Confirmas que deseas solicitar un reembolso para el pedido {order_id}? Razón: '{reason}'. Responde 'sí' para confirmar o 'no' para cancelar."
+
+    return "¿Confirmas esta acción? Responde 'sí' para confirmar o 'no' para cancelar."
+
+
+# ============================================================
+# LangGraph 节点函数
+# ============================================================
+
+
+def call_model(state: AgentState, openai_client: OpenAI):
+    """
+    调用 LLM 模型节点
+
+    Args:
+        state: Agent 状态
+        openai_client: OpenAI 客户端实例
+
+    Returns:
+        更新后的状态
+    """
+    messages = state["messages"]
+    pending_action = state.get("pending_action")
+
+    # 检查是否是确认消息
+    if pending_action:
+        last_msg = messages[-1] if messages else None
+        if isinstance(last_msg, HumanMessage):
+            user_input = last_msg.content.lower().strip()
+            # 用户确认
+            if user_input in ["sí", "si", "sí, confirmo", "si, confirmo", "confirmo"]:
+                # 恢复之前的工具调用
+                tool_calls = [pending_action]
+                return {
+                    "messages": [
+                        AIMessage(
+                            content="Confirmando operación...",
+                            tool_calls=[
+                                {
+                                    "name": tc["name"],
+                                    "args": tc["args"],
+                                    "id": tc.get("id", f"manual_{tc['name']}"),
+                                }
+                                for tc in tool_calls
+                            ],
+                        )
+                    ],
+                    "pending_action": None,
+                }
+            # 用户取消
+            elif user_input in ["no", "no, cancelo", "cancelo", "cancelar"]:
+                return {
+                    "messages": [
+                        AIMessage(content="Operación cancelada. ¿En qué puedo ayudarte ahora?")
+                    ],
+                    "pending_action": None,
+                }
+
+    # 构建消息上下文
+    chat_messages = []
+    # 添加系统消息
+    chat_messages.append({"role": "system", "content": SYSTEM_PROMPT})
+    # 转换 LangChain 消息到 OpenAI 格式
+    for msg in messages:
+        if isinstance(msg, SystemMessage):
+            chat_messages.append({"role": "system", "content": msg.content})
+        elif isinstance(msg, HumanMessage):
+            chat_messages.append({"role": "user", "content": msg.content})
+        elif isinstance(msg, AIMessage):
+            ai_msg = {"role": "assistant", "content": msg.content}
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                ai_msg["tool_calls"] = [
+                    {
+                        "id": tc.get("id", f"tc_{i}"),
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc["args"], ensure_ascii=False),
+                        },
+                    }
+                    for i, tc in enumerate(msg.tool_calls)
+                ]
+            chat_messages.append(ai_msg)
+        elif isinstance(msg, ToolMessage):
+            chat_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": msg.tool_call_id,
+                    "content": msg.content,
+                }
+            )
+
+    # 调用 DeepSeek API
+    try:
+        response = openai_client.chat.completions.create(
+            model=DEEPSEEK_MODEL,
+            messages=chat_messages,
+            tools=TOOLS,
+            tool_choice="auto",
+            stream=False,
+            timeout=API_TIMEOUT,
+        )
+
+        response_message = response.choices[0].message
+
+        # 构建 LangChain AIMessage
+        ai_msg = AIMessage(content=response_message.content)
+
+        # 处理 tool calls
+        if hasattr(response_message, "tool_calls") and response_message.tool_calls:
+            ai_msg.tool_calls = [
+                {
+                    "name": tc.function.name,
+                    "args": json.loads(tc.function.arguments),
+                    "id": tc.id,
+                }
+                for tc in response_message.tool_calls
+            ]
+
+        return {"messages": [ai_msg]}
+
+    except Exception as e:
+        print(f"Error al llamar al modelo: {e}")
+        return {
+            "messages": [
+                AIMessage(
+                    content="Lo siento, ha ocurrido un error inesperado. Por favor, inténtalo de nuevo más tarde."
+                )
+            ]
+        }
+
+
+def execute_tools(state: AgentState):
+    """
+    执行工具节点
+
+    Args:
+        state: Agent 状态
+
+    Returns:
+        更新后的状态
+    """
+    messages = state["messages"]
+    last_message = messages[-1] if messages else None
+
+    if not isinstance(last_message, AIMessage) or not hasattr(last_message, "tool_calls"):
+        return {"messages": []}
+
+    tool_calls = last_message.tool_calls
+    if not tool_calls:
+        return {"messages": []}
+
+    tool_messages = []
+    new_pending_action = None
+
+    for tool_call in tool_calls:
+        function_name = tool_call["name"]
+        function_args = tool_call.get("args", {})
+
+        # 检查是否是敏感操作
+        if function_name in SENSITIVE_ACTIONS:
+            # 需要确认，暂存并返回提示
+            new_pending_action = {
+                "name": function_name,
+                "args": function_args,
+                "id": tool_call.get("id", f"manual_{function_name}"),
+            }
+            confirmation_msg = _generate_confirmation_message(tool_call)
+
+            # 直接返回确认消息（不执行工具）
+            return {
+                "messages": [
+                    AIMessage(content=confirmation_msg),
+                ],
+                "pending_action": new_pending_action,
+            }
+
+        # 非敏感操作直接执行
+        print(f"[Agente] Ejecutando herramienta: {function_name}")
+
+        try:
+            if function_name == "search":
+                result = search(function_args.get("query", ""))
+            elif function_name == "query_order_logistics":
+                result = query_order_logistics(function_args.get("order_id", ""))
+            elif function_name == "update_order_address":
+                result = update_order_address(
+                    function_args.get("order_id", ""),
+                    function_args.get("new_address", ""),
+                )
+            elif function_name == "cancel_order":
+                result = cancel_order(function_args.get("order_id", ""))
+            elif function_name == "request_refund":
+                result = request_refund(
+                    function_args.get("order_id", ""),
+                    function_args.get("reason", ""),
+                )
+            elif function_name == "estimate_shipping":
+                result = estimate_shipping(
+                    function_args.get("country", ""),
+                    function_args.get("weight", 0),
+                )
+            else:
+                result = {"error": "Función desconocida"}
+
+            # 确保结果是字符串
+            if isinstance(result, (dict, list)):
+                result_str = json.dumps(result, ensure_ascii=False)
+            else:
+                result_str = str(result)
+
+            tool_messages.append(
+                ToolMessage(
+                    content=result_str,
+                    tool_call_id=tool_call.get("id", f"manual_{function_name}"),
+                    name=function_name,
+                )
+            )
+
+        except Exception as e:
+            print(f"Error al ejecutar herramienta {function_name}: {e}")
+            tool_messages.append(
+                ToolMessage(
+                    content=f"Error al ejecutar la herramienta: {str(e)}",
+                    tool_call_id=tool_call.get("id", f"manual_{function_name}"),
+                    name=function_name,
+                )
+            )
+
+    return {"messages": tool_messages, "pending_action": None}
+
+
+def should_continue(state: AgentState) -> str:
+    """
+    决定下一步：继续调用工具还是结束
+
+    Args:
+        state: Agent 状态
+
+    Returns:
+        str: "tools" 或 END
+    """
+    messages = state["messages"]
+    pending_action = state.get("pending_action")
+
+    # 如果有待确认的操作，直接结束
+    if pending_action:
+        return END
+
+    last_message = messages[-1] if messages else None
+
+    if (
+        isinstance(last_message, AIMessage)
+        and hasattr(last_message, "tool_calls")
+        and last_message.tool_calls
+    ):
+        return "tools"
+
+    return END
+
+
+# ============================================================
+# Agent 类
+# ============================================================
+
 
 class CustomerServiceAgent:
     """
-    西班牙语跨境电商客服 Agent
+    西班牙语跨境电商客服 Agent（LangGraph 版本）
 
     使用 DeepSeek-V3 模型，结合 RAG 检索和业务工具，
     为西班牙语客户提供订单查询、地址修改、政策咨询等服务。
@@ -80,8 +518,7 @@ class CustomerServiceAgent:
         初始化客服 Agent
         - 初始化 OpenAI 客户端连接 DeepSeek API
         - 构建知识库索引
-        - 初始化对话历史列表
-        - 初始化待确认操作存储
+        - 编译 LangGraph 图
         """
         # 从环境变量读取 API Key
         api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -91,17 +528,14 @@ class CustomerServiceAgent:
                 "Por favor, configure su API key de DeepSeek."
             )
 
-        # 初始化 OpenAI 客户端（连接到 DeepSeek）
+        # 初始化 OpenAI 客户端
         self.client = OpenAI(
             api_key=api_key,
             base_url=DEEPSEEK_BASE_URL,
-            timeout=API_TIMEOUT
+            timeout=API_TIMEOUT,
         )
 
-        # 模型名称
-        self.model = DEEPSEEK_MODEL
-
-        # 构建或加载知识库索引
+        # 构建知识库
         print("Inicializando base de conocimiento...")
         try:
             build_knowledge_base()
@@ -109,42 +543,37 @@ class CustomerServiceAgent:
             print(f"Error al inicializar la base de conocimiento: {e}")
         print("Agente de servicio al cliente listo!")
 
-        # 初始化对话历史列表
-        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        # 构建 LangGraph 图
+        workflow = StateGraph(AgentState)
 
-        # 初始化待确认操作
-        self.pending_action = None
+        # 添加节点
+        workflow.add_node("agent", lambda state: call_model(state, self.client))
+        workflow.add_node("tools", execute_tools)
 
+        # 设置入口点
+        workflow.set_entry_point("agent")
 
-    def _generate_confirmation_message(self, tool_call) -> str:
-        """
-        生成操作确认消息
+        # 添加条件边
+        workflow.add_conditional_edges(
+            "agent",
+            should_continue,
+            {
+                "tools": "tools",
+                END: END,
+            },
+        )
 
-        Args:
-            tool_call: 工具调用对象
+        # 添加从 tools 回到 agent 的边
+        workflow.add_edge("tools", "agent")
 
-        Returns:
-            str: 西班牙语确认消息
-        """
-        function_name = tool_call.function.name
-        function_args = json.loads(tool_call.function.arguments)
+        # 添加记忆
+        memory = MemorySaver()
 
-        if function_name == "cancel_order":
-            order_id = function_args.get("order_id", "desconocido")
-            return f"¿Confirmas que deseas cancelar el pedido {order_id}? Responde 'sí' para confirmar o 'no' para cancelar."
-        
-        elif function_name == "update_order_address":
-            order_id = function_args.get("order_id", "desconocido")
-            new_address = function_args.get("new_address", "desconocida")
-            return f"¿Confirmas que deseas cambiar la dirección del pedido {order_id} a: '{new_address}'? Responde 'sí' para confirmar o 'no' para cancelar."
-        
-        elif function_name == "request_refund":
-            order_id = function_args.get("order_id", "desconocido")
-            reason = function_args.get("reason", "no especificada")
-            return f"¿Confirmas que deseas solicitar un reembolso para el pedido {order_id}? Razón: '{reason}'. Responde 'sí' para confirmar o 'no' para cancelar."
-        
-        return "¿Confirmas esta acción? Responde 'sí' para confirmar o 'no' para cancelar."
+        # 编译图
+        self.app = workflow.compile(checkpointer=memory)
 
+        # 线程 ID，用于区分不同的对话
+        self.thread_id = "thread-0"
 
     def chat(self, user_message: str) -> str:
         """
@@ -157,441 +586,26 @@ class CustomerServiceAgent:
             str: Agent 生成的西班牙语回复
         """
         try:
-            # 检查是否是对确认操作的响应
-            user_message_lower = user_message.strip().lower()
-            
-            if self.pending_action is not None:
-                # 用户确认操作
-                if user_message_lower in ["sí", "si", "sí, confirmo", "si, confirmo", "confirmo"]:
-                    print(f"[Agente] Confirmando operación pendiente...")
-                    
-                    # 执行暂存的操作
-                    tool_call = self.pending_action
-                    function_name = tool_call.function.name
-                    function_args = json.loads(tool_call.function.arguments)
-                    
-                    # 将暂存的工具调用加入历史
-                    self.messages.append({
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [
-                            {
-                                "id": tool_call.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tool_call.function.name,
-                                    "arguments": tool_call.function.arguments
-                                }
-                            }
-                        ]
-                    })
-                    
-                    # 执行对应的函数
-                    if function_name == "search":
-                        function_result = search(function_args.get("query", ""))
-                    elif function_name == "query_order_logistics":
-                        function_result = query_order_logistics(function_args.get("order_id", ""))
-                    elif function_name == "update_order_address":
-                        function_result = update_order_address(
-                            function_args.get("order_id", ""),
-                            function_args.get("new_address", "")
-                        )
-                    elif function_name == "cancel_order":
-                        function_result = cancel_order(function_args.get("order_id", ""))
-                    elif function_name == "request_refund":
-                        function_result = request_refund(
-                            function_args.get("order_id", ""),
-                            function_args.get("reason", "")
-                        )
-                    elif function_name == "estimate_shipping":
-                        function_result = estimate_shipping(
-                            function_args.get("country", ""),
-                            function_args.get("weight", 0)
-                        )
-                    else:
-                        function_result = {"error": "Función desconocida"}
-                    
-                    # 将工具执行结果加入历史
-                    self.messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps(function_result, ensure_ascii=False)
-                    })
-                    
-                    # 清空待确认操作
-                    self.pending_action = None
-                    
-                    # 再次调用模型生成最终回复
-                    final_response = self.client.chat.completions.create(
-                        model="deepseek-chat",
-                        messages=self.messages,
-                        max_tokens=300,
-                        temperature=0.7,
-                        stream=False,
-                        timeout=30
-                    )
-                    reply = final_response.choices[0].message.content
-                    
-                    # 将最终回复加入历史
-                    self.messages.append({"role": "assistant", "content": reply})
-                    return reply
-                
-                # 用户取消操作
-                elif user_message_lower in ["no", "no, cancelo", "cancelo", "cancelar"]:
-                    print(f"[Agente] Operación cancelada por el usuario")
-                    self.pending_action = None
-                    self.messages.append({
-                        "role": "user",
-                        "content": user_message
-                    })
-                    reply = "Operación cancelada."
-                    self.messages.append({
-                        "role": "assistant",
-                        "content": reply
-                    })
-                    return reply
-            
-            # 正常处理用户消息
-            # 步骤 a: 将用户消息加入对话历史
-            self.messages.append({
-                "role": "user",
-                "content": user_message
-            })
+            # 配置对话线程
+            config = {"configurable": {"thread_id": self.thread_id}}
 
-            # 步骤 c: 工具函数定义（OpenAI 格式）
-            tools = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "query_order_logistics",
-                        "description": "Consulta el estado de logística de un pedido. Necesita el número de pedido (formato: ESPxxxxx). Retorna información sobre el estado actual, transportista y fecha estimada de entrega.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "order_id": {
-                                    "type": "string",
-                                    "description": "Número de pedido, formato: ESPxxxxx"
-                                }
-                            },
-                            "required": ["order_id"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "update_order_address",
-                        "description": "Modifica la dirección de entrega de un pedido. Solo funciona para pedidos con estado 'No enviado'. Necesita el número de pedido y la nueva dirección.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "order_id": {
-                                    "type": "string",
-                                    "description": "Número de pedido, formato: ESPxxxxx"
-                                },
-                                "new_address": {
-                                    "type": "string",
-                                    "description": "Nueva dirección de entrega"
-                                }
-                            },
-                            "required": ["order_id", "new_address"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "search",
-                        "description": "Busca información en la base de conocimiento sobre políticas de la tienda, preguntas frecuentes, devoluciones, envíos, cambios, etc. Úsalo siempre que el usuario pregunte sobre políticas o reglas.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "query": {
-                                    "type": "string",
-                                    "description": "Consulta del usuario en español"
-                                },
-                                "top_k": {
-                                    "type": "integer",
-                                    "description": "Número de resultados a recuperar (por defecto 2)",
-                                    "default": 2
-                                }
-                            },
-                            "required": ["query"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "cancel_order",
-                        "description": "Cancelar un pedido que aún no ha sido enviado. Requiere order_id.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "order_id": {
-                                    "type": "string",
-                                    "description": "Número de pedido, formato: ESPxxxxx"
-                                }
-                            },
-                            "required": ["order_id"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "request_refund",
-                        "description": "Solicitar un reembolso para un pedido entregado. Requiere order_id y razón.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "order_id": {
-                                    "type": "string",
-                                    "description": "Número de pedido, formato: ESPxxxxx"
-                                },
-                                "reason": {
-                                    "type": "string",
-                                    "description": "Razón del reembolso (opcional)"
-                                }
-                            },
-                            "required": ["order_id"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "estimate_shipping",
-                        "description": "Estimar el costo de envío internacional. Requiere país y peso en kg.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "country": {
-                                    "type": "string",
-                                    "description": "País de destino (en español o inglés)"
-                                },
-                                "weight": {
-                                    "type": "number",
-                                    "description": "Peso del paquete en kilogramos"
-                                }
-                            },
-                            "required": ["country", "weight"]
-                        }
-                    }
-                }
-            ]
-
-            # 步骤 d: 第一次调用：让模型决定是否需要调用工具
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=self.messages,
-                tools=tools,
-                tool_choice="auto",
-                stream=False,
-                timeout=API_TIMEOUT
+            # 调用 LangGraph
+            output = self.app.invoke(
+                {"messages": [HumanMessage(content=user_message)]},
+                config=config,
             )
 
-            # Procesar la respuesta del modelo
-            response_message = response.choices[0].message
+            # 提取最后一条助理消息
+            messages = output["messages"]
+            for msg in reversed(messages):
+                if isinstance(msg, AIMessage):
+                    return msg.content
 
-            # 容错修复：如果标准字段里没有 tool_calls，但模型在文本中输出了 function call
-            if not response_message.tool_calls and hasattr(response_message, 'content') and response_message.content:
-                content = response_message.content
-                if '<｜｜DSML｜｜invoke name="' in content:
-                    # 先添加模型的文本回复到历史（作为 assistant 消息，无 tool_calls）
-                    self.messages.append({
-                        "role": "assistant",
-                        "content": response_message.content
-                    })
-
-                    # 解析并执行工具
-                    invokes = re.findall(r'<｜｜DSML｜｜invoke name="(\w+)">(.*?)</｜｜DSML｜｜invoke>', content, re.DOTALL)
-                    for func_name, params_str in invokes:
-                        params = {}
-                        for param_match in re.finditer(r'<｜｜DSML｜｜parameter name="(\w+)"[^>]*>(.*?)</｜｜DSML｜｜parameter>', params_str, re.DOTALL):
-                            pname = param_match.group(1)
-                            pvalue = param_match.group(2)
-                            try:
-                                pvalue = json.loads(pvalue)
-                            except:
-                                pass
-                            params[pname] = pvalue
-
-                        print(f"[Agente] Reparación manual: llamando a {func_name}")
-                        
-                        # 检查是否是敏感操作
-                        if func_name in SENSITIVE_ACTIONS:
-                            # 构建模拟的 tool_call
-                            mock_tool_call = SimpleNamespace(
-                                id=f"manual_{func_name}_{int(time.time())}",
-                                function=SimpleNamespace(
-                                    name=func_name,
-                                    arguments=json.dumps(params, ensure_ascii=False)
-                                )
-                            )
-                            self.pending_action = mock_tool_call
-                            confirmation_msg = self._generate_confirmation_message(mock_tool_call)
-                            self.messages.append({
-                                "role": "assistant",
-                                "content": confirmation_msg
-                            })
-                            return confirmation_msg
-                        
-                        # 非敏感操作直接执行
-                        if func_name == "search":
-                            function_result = search(params.get("query", ""))
-                        elif func_name == "query_order_logistics":
-                            function_result = query_order_logistics(params.get("order_id", ""))
-                        elif func_name == "update_order_address":
-                            function_result = update_order_address(params.get("order_id", ""), params.get("new_address", ""))
-                        elif func_name == "cancel_order":
-                            function_result = cancel_order(params.get("order_id", ""))
-                        elif func_name == "request_refund":
-                            function_result = request_refund(params.get("order_id", ""), params.get("reason", ""))
-                        elif func_name == "estimate_shipping":
-                            function_result = estimate_shipping(params.get("country", ""), params.get("weight", 0))
-                        else:
-                            function_result = {"error": "Función desconocida"}
-
-                        # 添加 tool 消息到历史
-                        self.messages.append({
-                            "role": "tool",
-                            "tool_call_id": f"manual_{func_name}",
-                            "content": json.dumps(function_result, ensure_ascii=False)
-                        })
-
-                    # 用更新后的历史再次调用模型生成最终回复
-                    try:
-                        final_response = self.client.chat.completions.create(
-                            model="deepseek-chat",
-                            messages=self.messages,
-                            max_tokens=300,
-                            temperature=0.7,
-                            stream=False,
-                            timeout=30
-                        )
-                        reply = final_response.choices[0].message.content
-                    except Exception as e:
-                        print(f"Error en la respuesta final: {e}")
-                        reply = "Lo siento, encontré un problema al procesar la respuesta."
-
-                    # 将最终回复加入历史
-                    self.messages.append({"role": "assistant", "content": reply})
-                    return reply
-
-            # 检查模型是否要求调用工具
-            if response_message.tool_calls:
-                # 检查是否有敏感操作需要确认
-                has_sensitive_action = False
-                for tool_call in response_message.tool_calls:
-                    if tool_call.function.name in SENSITIVE_ACTIONS:
-                        has_sensitive_action = True
-                        break
-                
-                if has_sensitive_action:
-                    # 对于敏感操作，暂存并请求确认
-                    for tool_call in response_message.tool_calls:
-                        if tool_call.function.name in SENSITIVE_ACTIONS:
-                            self.pending_action = tool_call
-                            confirmation_msg = self._generate_confirmation_message(tool_call)
-                            
-                            # 将模型的消息加入历史
-                            self.messages.append({
-                                "role": "assistant",
-                                "content": response_message.content
-                            })
-                            
-                            # 将确认消息加入历史
-                            self.messages.append({
-                                "role": "assistant",
-                                "content": confirmation_msg
-                            })
-                            
-                            return confirmation_msg
-                
-                # 非敏感操作直接执行
-                # 将模型的工具调用请求加入历史
-                self.messages.append({
-                    "role": "assistant",
-                    "content": response_message.content,
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments
-                            }
-                        } for tc in response_message.tool_calls
-                    ]
-                })
-
-                # 逐个执行工具调用
-                for tool_call in response_message.tool_calls:
-                    function_name = tool_call.function.name
-                    function_args = json.loads(tool_call.function.arguments)
-
-                    print(f"[Agente] Llamando a herramienta: {function_name}")
-
-                    # 执行对应的函数
-                    if function_name == "search":
-                        function_result = search(function_args.get("query", ""))
-                    elif function_name == "query_order_logistics":
-                        function_result = query_order_logistics(function_args.get("order_id", ""))
-                    elif function_name == "update_order_address":
-                        function_result = update_order_address(
-                            function_args.get("order_id", ""),
-                            function_args.get("new_address", "")
-                        )
-                    elif function_name == "cancel_order":
-                        function_result = cancel_order(function_args.get("order_id", ""))
-                    elif function_name == "request_refund":
-                        function_result = request_refund(
-                            function_args.get("order_id", ""),
-                            function_args.get("reason", "")
-                        )
-                    elif function_name == "estimate_shipping":
-                        function_result = estimate_shipping(
-                            function_args.get("country", ""),
-                            function_args.get("weight", 0)
-                        )
-                    else:
-                        function_result = {"error": "Función desconocida"}
-
-                    # 将工具执行结果以正确的格式加入历史
-                    self.messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps(function_result, ensure_ascii=False)
-                    })
-
-                # 用更新后的历史再次调用模型，生成最终回复
-                try:
-                    final_response = self.client.chat.completions.create(
-                        model="deepseek-chat",
-                        messages=self.messages,
-                        max_tokens=300,
-                        temperature=0.7,
-                        stream=False,
-                        timeout=30
-                    )
-                    reply = final_response.choices[0].message.content
-                except Exception as e:
-                    print(f"Error en la respuesta final: {e}")
-                    reply = "Lo siento, encontré un problema al procesar la respuesta."
-
-            else:
-                # 模型没有请求工具，直接使用其回复
-                reply = response_message.content
-
-            # Respuesta final
-            self.messages.append({"role": "assistant", "content": reply})
-            return reply
+            return "Lo siento, no puedo responder en este momento."
 
         except Exception as e:
-            error_message = f"Error inesperado: {str(e)}"
-            print(error_message)
-            return "Lo siento, ha ocurrido un error inesperado. Por favor, inténtelo de nuevo más tarde."
+            print(f"Error en el chat: {e}")
+            return "Lo siento, ha ocurrido un error inesperado. Por favor, inténtalo de nuevo más tarde."
 
 
 # ============================================================
@@ -604,7 +618,7 @@ if __name__ == "__main__":
     启动客服 Agent，等待用户输入并生成回复
     """
     print("=" * 60)
-    print("跨境电商客服 Agent - Modo de Prueba")
+    print("跨境电商客服 Agent - LangGraph 版本 - Modo de Prueba")
     print("=" * 60)
     print()
 
@@ -615,16 +629,16 @@ if __name__ == "__main__":
 
         print()
         print("=" * 60)
-        print("¡Bienvenido! Soy su asistente de servicio al cliente.")
-        print("Puedo ayudarle con:")
-        print("  - Consultas sobre el estado de sus pedidos")
+        print("¡Bienvenido! Soy tu asistente de servicio al cliente.")
+        print("Puedo ayudarte con:")
+        print("  - Consultas sobre el estado de tus pedidos")
         print("  - Modificación de direcciones de entrega")
         print("  - Cancelación de pedidos (requiere confirmación)")
         print("  - Solicitudes de reembolso (requieren confirmación)")
         print("  - Estimación de costos de envío")
         print("  - Información sobre políticas de la tienda")
         print()
-        print("Escriba 'salir' para terminar la conversación.")
+        print("Escribe 'salir' para terminar la conversación.")
         print("=" * 60)
         print()
 
@@ -640,7 +654,7 @@ if __name__ == "__main__":
 
             # 检查空输入
             if not user_input:
-                print("Por favor, ingrese un mensaje.\n")
+                print("Por favor, ingresa un mensaje.\n")
                 continue
 
             # 调用 Agent 处理消息
@@ -650,9 +664,9 @@ if __name__ == "__main__":
     except ValueError as e:
         # API Key 未配置
         print(f"\nError de configuración: {e}")
-        print("\nPor favor, configure la variable de entorno DEEPSEEK_API_KEY")
-        print("En Windows: set DEEPSEEK_API_KEY=su_api_key")
-        print("En Linux/Mac: export DEEPSEEK_API_KEY=su_api_key")
+        print("\nPor favor, configura la variable de entorno DEEPSEEK_API_KEY")
+        print("En Windows: set DEEPSEEK_API_KEY=tu_api_key")
+        print("En Linux/Mac: export DEEPSEEK_API_KEY=tu_api_key")
 
     except KeyboardInterrupt:
         print("\n\nPrograma interrumpido por el usuario.")
@@ -661,3 +675,6 @@ if __name__ == "__main__":
     except Exception as e:
         # 其他错误
         print(f"\nError inesperado: {e}")
+        import traceback
+
+        traceback.print_exc()
