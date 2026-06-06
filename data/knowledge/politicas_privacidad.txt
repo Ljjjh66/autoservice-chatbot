@@ -1,0 +1,46 @@
+POLÍTICAS DE PRIVACIDAD Y PROTECCIÓN DE DATOS - AutoService
+
+1. INFORMACIÓN QUE RECOPILAMOS
+Solo recopilamos la información necesaria para procesar su pedido y proporcionarle un servicio óptimo. Esto incluye: nombre completo, dirección de envío y facturación, dirección de correo electrónico, número de teléfono y datos de pago. No recopilamos información sensible como datos médicos o políticos.
+
+2. USO DE SUS DATOS
+Utilizamos sus datos exclusivamente para: procesar y gestionar sus pedidos, comunicarnos con usted sobre el estado de su pedido, proporcionar soporte al cliente, enviar comunicaciones comerciales (solo si ha dado su consentimiento) y mejorar nuestros servicios mediante análisis estadísticos.
+
+3. COMPARTIR DATOS CON TERCEROS
+No vendemos ni alquilamos sus datos personales a terceros. Solo compartimos la información necesaria con: empresas de transporte para la entrega de su pedido, procesadores de pago para completar transacciones, y autoridades competentes cuando sea requerido por ley.
+
+4. ALMACENAMIENTO Y SEGURIDAD
+Sus datos se almacenan en servidores seguros ubicados en la Unión Europea, cumpliendo con la normativa GDPR. Utilizamos encriptación SSL para todas las transmisiones de datos. Realizamos auditorías de seguridad periódicas y aplicamos las últimas medidas de ciberseguridad.
+
+5. CUMPLIMIENTO DEL RGPD (GDPR)
+AutoService cumple plenamente con el Reglamento General de Protección de Datos de la Unión Europea. Hemos designado un Delegado de Protección de Datos (DPO) que supervisa el cumplimiento de todas las normativas de privacidad aplicables.
+
+6. POLÍTICA DE COOKIES
+Nuestra web utiliza cookies para mejorar su experiencia de navegación, recordar sus preferencias y analizar el tráfico del sitio. Las cookies necesarias para el funcionamiento del sitio no requieren su consentimiento. Puede gestionar sus preferencias de cookies en cualquier momento en la configuración de su navegador.
+
+7. SUS DERECHOS DE PRIVACIDAD
+Como usuario, tiene derecho a: acceder a sus datos personales, rectificar datos incorrectos, solicitar la eliminación de sus datos ("derecho al olvido"), oponerse al tratamiento de sus datos, solicitar la portabilidad de sus datos, y retirar su consentimiento en cualquier momento.
+
+8. CÓMO EJERCER SUS DERECHOS
+Para ejercer cualquiera de sus derechos de privacidad, puede contactar con nuestro Delegado de Protección de Datos:
+Email: privacidad@autoservice.es
+Dirección: Calle Privacidad 456, 28002 Madrid
+Deberemos verificar su identidad antes de procesar su solicitud.
+
+9. COMUNICACIONES DE MARKETING
+Solo enviamos comunicaciones comerciales si ha dado su consentimiento expreso durante el registro o en su cuenta. Cada email de marketing incluye un enlace para cancelar la suscripción. Si se da de baja, dejará de recibir estas comunicaciones, pero seguiremos enviándole mensajes relacionados con sus pedidos activos.
+
+10. CONSERVACIÓN DE DATOS
+Conservamos sus datos mientras mantenga una cuenta activa o sea necesario para proporcionarle servicios. Los datos de facturación se conservan durante el período legalmente requerido (hasta 7 años para fines fiscales). Una vez finalizado el período de conservación, sus datos serán eliminados de forma segura.
+
+11. MENORES DE EDAD
+Nuestros servicios no están dirigidos a menores de 18 años. No recopilamos intencionadamente datos de menores. Si tiene conocimiento de que un menor ha proporcionado sus datos, contacte con nosotros para proceder a su eliminación inmediata.
+
+12. CAMBIOS EN LA POLÍTICA DE PRIVACIDAD
+Podemos actualizar nuestra política de privacidad ocasionalmente. Le notificaremos cualquier cambio significativo por email o mediante un aviso destacado en nuestra web. Le recomendamos revisar esta política periódicamente.
+
+13. CONTACTO PARA PRIVACIDAD
+Para cualquier consulta relacionada con la privacidad y protección de datos:
+Email: privacidad@autoservice.es
+Teléfono: +34 900 123 456
+Dirección: AutoService - Departamento de Privacidad, Calle Privacidad 456, 28002 Madrid

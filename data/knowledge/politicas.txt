@@ -1,0 +1,13 @@
+POLÍTICAS Y PREGUNTAS FRECUENTES - SERVICIO AL CLIENTE
+
+PREGUNTA 1: ¿CÓMO PUEDO CONSULTAR EL ESTADO DE MI PEDIDO?
+Para consultar el estado de su pedido, necesita su número de pedido que comienza con "ESP". Puede utilizar nuestra función de consulta de pedidos proporcionando el número de pedido. Recibirá información sobre el estado actual del envío, incluyendo: si el pedido ha sido enviado, si está en tránsito, o si ya ha sido entregado. También podrá ver la fecha estimada de entrega y la empresa de transporte responsable.
+
+PREGUNTA 2: ¿CUÁLES SON LOS REQUISITOS PARA MODIFICAR LA DIRECCIÓN DE UN PEDIDO?
+Solo es posible modificar la dirección de entrega si el pedido aún no ha sido enviado. Los pedidos con estado "No enviado" pueden ser actualizados con una nueva dirección. Una vez que el pedido cambia a estado "Enviado" o "En tránsito", la dirección no puede ser modificada. Si necesita cambiar la dirección de un pedido ya enviado, deberá esperar a la entrega y luego gestionar una devolución si es necesario.
+
+PREGUNTA 3: ¿CUÁL ES LA POLÍTICA DE DEVOLUCIONES?
+Aceptamos devoluciones dentro de los 30 días posteriores a la recepción del pedido. El producto debe estar en su estado original, sin usar y con todas las etiquetas adjuntas. Para iniciar una devolución, debe contactarnos proporcionando su número de pedido y el motivo de la devolución. Los reembolsos se procesarán una vez que recibamos y verifiquemos el producto devuelto. Los gastos de envío para devoluciones son responsabilidad del cliente, excepto en casos de productos defectuosos o errores de nuestro parte.
+
+PREGUNTA 4: ¿CÓMO PUEDO CONTACTAR CON EL SERVICIO DE ATENCIÓN AL CLIENTE?
+Nuestro equipo de atención al cliente está disponible de lunes a viernes de 9:00 a 18:00 (hora de España). Puede contactarnos por los siguientes medios: Teléfono: +34 900 123 456 (llamada gratuita desde España), Email: servicio.cliente@autoservice.es, Chat en línea: Disponible en nuestra página web, Formulario de contacto: A través de nuestra aplicación. Nos esforzamos por responder a todas las consultas en menos de 24 horas.
