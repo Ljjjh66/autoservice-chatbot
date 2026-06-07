@@ -203,26 +203,34 @@ if st.session_state.quick_question:
     with st.chat_message("user"):
         st.markdown(user_input)
     
-    # 调用 Agent 获取回复
+    # 调用 Agent 获取流式回复
     with st.chat_message("assistant"):
-        with st.spinner("Pensando..."):
-            try:
-                reply = agent.chat(user_input, session_id)
-                st.markdown(reply)
-                
-                # 添加回复到历史（Agent 已经保存到数据库，但这里也要更新 session_state）
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": reply
-                })
-                
-            except Exception as e:
-                error_msg = f"Lo siento, ha ocurrido un error: {str(e)}"
-                st.error(error_msg)
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": error_msg
-                })
+        try:
+            # 用 write_stream 显示流式输出
+            stream_container = st.empty()
+            full_reply = ""
+            with stream_container:
+                with st.spinner("Pensando..."):
+                    for delta in agent.chat_stream(user_input, session_id):
+                        full_reply += delta
+                        stream_container.markdown(full_reply + "▌")
+            
+            # 显示最终回复
+            stream_container.markdown(full_reply)
+            
+            # 添加回复到历史（Agent 已经保存到数据库，但这里也要更新 session_state）
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": full_reply
+            })
+            
+        except Exception as e:
+            error_msg = f"Lo siento, ha ocurrido un error: {str(e)}"
+            st.error(error_msg)
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": error_msg
+            })
     
     # 刷新界面
     st.rerun()
@@ -240,26 +248,34 @@ if user_input := st.chat_input("Escribe tu pregunta en español..."):
     with st.chat_message("user"):
         st.markdown(user_input)
     
-    # 调用 Agent 获取回复
+    # 调用 Agent 获取流式回复
     with st.chat_message("assistant"):
-        with st.spinner("Pensando..."):
-            try:
-                reply = agent.chat(user_input, session_id)
-                st.markdown(reply)
-                
-                # 添加回复到历史（Agent 已经保存到数据库，但这里也要更新 session_state）
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": reply
-                })
-                
-            except Exception as e:
-                error_msg = f"Lo siento, ha ocurrido un error: {str(e)}"
-                st.error(error_msg)
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": error_msg
-                })
+        try:
+            # 用 write_stream 显示流式输出
+            stream_container = st.empty()
+            full_reply = ""
+            with stream_container:
+                with st.spinner("Pensando..."):
+                    for delta in agent.chat_stream(user_input, session_id):
+                        full_reply += delta
+                        stream_container.markdown(full_reply + "▌")
+            
+            # 显示最终回复
+            stream_container.markdown(full_reply)
+            
+            # 添加回复到历史（Agent 已经保存到数据库，但这里也要更新 session_state）
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": full_reply
+            })
+            
+        except Exception as e:
+            error_msg = f"Lo siento, ha ocurrido un error: {str(e)}"
+            st.error(error_msg)
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": error_msg
+            })
     
     # 刷新界面
     st.rerun()

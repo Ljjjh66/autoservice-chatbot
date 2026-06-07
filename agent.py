@@ -672,7 +672,7 @@ class CustomerServiceAgent:
 
     def chat(self, user_message: str, session_id="default_user") -> str:
         """
-        处理用户消息并生成回复
+        处理用户消息并生成回复（非流式）
 
         Args:
             user_message: 用户输入的西班牙语消息
@@ -710,6 +710,53 @@ class CustomerServiceAgent:
         except Exception as e:
             print(f"Error en el chat: {e}")
             return "Lo siento, ha ocurrido un error inesperado. Por favor, inténtalo de nuevo más tarde."
+
+    def chat_stream(self, user_message: str, session_id="default_user"):
+        """
+        处理用户消息并生成流式回复
+
+        Args:
+            user_message: 用户输入的西班牙语消息
+            session_id: 会话 ID（用于持久化）
+
+        Yields:
+            str: 流式输出的片段
+        """
+        try:
+            # 保存用户消息到数据库
+            self.save_message(session_id, "user", user_message)
+
+            # 配置对话线程
+            config = {"configurable": {"thread_id": self.thread_id}}
+
+            # 输入状态
+            input_state = {"messages": [HumanMessage(content=user_message)]}
+
+            # 流式执行 LangGraph
+            full_reply = ""
+            for event in self.app.stream(input_state, config=config, stream_mode="values"):
+                messages = event["messages"]
+                last_msg = messages[-1]
+                
+                # 如果是 LLM 正在生成回复（流式 token）
+                if isinstance(last_msg, AIMessage):
+                    # 这里我们用非流式的，但在实际场景中
+                    # 可以用 LLM 的流式接口逐字 yield
+                    if last_msg.content and last_msg.content != full_reply:
+                        delta = last_msg.content[len(full_reply):]
+                        if delta:
+                            full_reply = last_msg.content
+                            yield delta
+                    elif last_msg.tool_calls:
+                        # 如果是工具调用，提示用户
+                        yield "\n[Agent: Llamando a herramientas...]\n"
+            
+            # 保存最终回复到数据库
+            self.save_message(session_id, "assistant", full_reply)
+
+        except Exception as e:
+            print(f"Error en el chat_stream: {e}")
+            yield "Lo siento, ha ocurrido un error inesperado. Por favor, inténtalo de nuevo más tarde."
 
 
 # ============================================================
