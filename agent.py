@@ -33,6 +33,8 @@ from tools import (
     estimate_shipping,
 )
 from rag import search, build_knowledge_base
+from validators import validate_tool_args, format_validation_error_for_llm
+from schemas import SCHEMA_REGISTRY
 
 
 # ============================================================
@@ -399,6 +401,26 @@ def execute_tools(state: AgentState):
     for tool_call in tool_calls:
         function_name = tool_call["name"]
         function_args = tool_call.get("args", {})
+
+        # 【第一步】先验证参数
+        print(f"[Agente] Validando parámetros para: {function_name}")
+        is_valid, error_msg, validated_args = validate_tool_args(function_name, function_args)
+        
+        if not is_valid:
+            # 参数验证失败，返回错误提示
+            print(f"[Agente] Validación fallida: {error_msg}")
+            llm_error_msg = format_validation_error_for_llm(error_msg)
+            tool_messages.append(
+                ToolMessage(
+                    content=llm_error_msg,
+                    tool_call_id=tool_call.get("id", f"manual_{function_name}"),
+                    name=function_name,
+                )
+            )
+            continue  # 继续处理下一个 tool call
+        
+        # 验证通过，使用验证后的参数
+        function_args = validated_args if validated_args is not None else function_args
 
         # 检查是否是敏感操作
         if function_name in SENSITIVE_ACTIONS:
